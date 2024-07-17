@@ -1,0 +1,475 @@
+module HashSet
+
+use int.Int
+use int.EuclideanDivision
+use list.List
+use list.NthNoOpt
+use list.Mem
+use list.Length
+use list.Append
+use list.Elements
+use set.Fset
+use array.Array
+use array.ToList
+
+
+(* 
+referenced this from the toccata gallery linked in the writeup : 
+https://toccata.gitlabpages.inria.fr/toccata/gallery/hashtbl_impl.en.html 
+*)
+
+(*
+TODO: add remove operation
+TODO: add size field (update all functions that change size )
+TODO: resize operation 
+TODO: create predicate to enforce data structure
+invariants
+notes: 
+use the model wherever possible
+use loops instead of recursion(more info in scope)
+for nested loops, outer invariants should be in inner loop
+can only update h.data at the end of the function
+*)
+
+type key
+
+val eq (x : key) (y : key) : bool
+ensures { result <-> x = y }
+
+val function hash (x : key) : int
+ensures { result >= 0 }
+
+type bucket = list key
+
+(* this doesn't pass, and no smoke was detected locally *)
+(* goal smoke : false  *)
+
+(* returns the hash(k) mod length of our hash set *)
+(* taken from the gallery implementation linked above *)
+let function bucket_hash (k : key) (n : int) : int = 
+    requires{n > 0}
+    ensures{0 <= result < n} 
+    mod (hash(k)) (n) 
+
+(* check whether a given key is in our hash set *)
+(* modified from the gallery implementation linked above *)
+predicate in_data (k: key) (d: array bucket) =
+    Mem.mem k d[bucket_hash k (length d)]
+
+(* if something is in our ghost set, then it should be in our data *)
+(* modified from gallery implementation linked above*)
+predicate good_data (k: key) (model: Fset.fset key) (d: array bucket) =
+    Fset.mem k model <-> in_data k d
+
+(* for all keys in our bucket (d[i]), their hash should be i *)
+(* modified from gallery implementation linked above *)
+predicate good_hash (d: array bucket) (i: int) =
+    forall k: key . Mem.mem k d[i] -> bucket_hash k (length d) = i
+
+(* split this forall into k and not the keys*)
+
+(* our given data structure for checkpoint *)
+type hash_set = { mutable data : array bucket ; mutable size : int ; ghost mutable model : Fset.fset key }
+
+invariant {length data > 0}
+
+(* for all of our buckets, verify that all keys belong *)
+invariant {forall i . 0 <= i < length data -> good_hash data i} 
+
+(* for all the keys in our hash set, make sure there in the model and the ds*)
+invariant {forall k : key . good_data k model data}
+
+by {size = 0 ; data = Array.make 1 Nil ;  model = Fset.empty} 
+
+(* =============================================== *)
+(* Utility Functions *)
+
+(* find a key in one of our buckets *)
+(* modified from gallery implementation above *)
+let rec list_find (k : key) (b : bucket): bool = 
+    ensures{result <-> (Mem.mem k b)}   
+    variant{b}
+    match b with 
+    | Nil -> false
+    | (Cons x xs) -> if (eq x k) then true else list_find k xs
+    end
+
+(* remove a key from one of our buckets *)
+(* modified from gallery implementation above *)
+let rec list_remove (k : key) (l : bucket) : bucket = 
+    ensures{forall k': key . Mem.mem k' result <-> Mem.mem k' l /\ k' <> k }
+    variant{l}
+    match l with 
+    | Nil -> Nil
+    | (Cons x xs) -> if (eq x k) then list_remove k xs else Cons x (list_remove k xs)
+    end
+
+(* let rec list_equal (l1 : bucket) (l2 : bucket) : bool =
+    requires{length l1 = length l2}  *)
+
+
+(* =============================================== *)
+(* Hash Set Operations*)
+
+
+(* resizes our hash table to be 2n + 1 where n is the size of hash set *)
+(* modified from the gallery implementation above *)
+let resize (h : hash_set) : unit = 
+    
+    let odata = h.data in
+    let osize = h.size in 
+    let nsize = 2 * osize + 1 in
+    let ndata = make nsize Nil in  
+    
+    (* recursive helper that reassigns keys to their new buckets *)
+    let rec rehash (ghost i : int) l =
+        (* these preconditions are basically data structure invars *)
+        (* same for postconditions *)
+        requires {forall k: key . Mem.mem k l -> bucket_hash k osize = i}
+        requires {forall j: int. 0 <= j < nsize -> good_hash ndata j}
+        requires {forall k: key .
+        if 0 <= (bucket_hash k osize) < i then good_data k h.model ndata
+        else if (bucket_hash k osize = i) then
+          (Fset.mem k h.model <-> Mem.mem k l \/ in_data k ndata)
+        else not in_data k ndata}
+        ensures {forall j: int. 0 <= j < nsize -> good_hash ndata j}
+        ensures {forall k : key . if 0 <= bucket_hash k osize <= i then good_data k h.model ndata
+        else not in_data k ndata}
+        variant {l}
+        match l with 
+        | Nil -> ()
+        | Cons x xs -> 
+            let b = bucket_hash x nsize in 
+            ndata[b] <- (Cons x ndata[b]);
+            rehash i xs
+        end 
+    in 
+    for i = 0 to osize - 1 do
+      invariant { forall j: int. 0 <= j < nsize -> good_hash ndata j }
+      invariant { forall k: key .
+        if 0 <= bucket_hash k osize < i then good_data k h.model ndata
+        else not in_data k ndata }
+      rehash i odata[i]
+    done;
+    h.data <- ndata
+
+
+(* removes key k from our hash set *)
+(* modified from the gallery implementation above *)
+let remove (h : hash_set) (k : key) : unit = 
+    ensures{h.model == Fset.remove k (old h.model)}
+    let i = bucket_hash k (length h.data) in 
+
+    assert {forall j . 0 <= j < length h.data -> good_hash h.data j};
+    assert {0 <= i < length h.data};
+     (* assert {((forall j . 0 <= j < length h.data -> good_hash h.data j) /\  
+            0 <= i < length h.data)
+        -> good_hash h.data i}; *)
+    assert {good_hash h.data i};
+    assert {forall q : key . (q <> k) -> good_data q h.model h.data};
+    assert {forall q : key . Mem.mem q h.data[i] -> bucket_hash q (length h.data) = i};
+
+    (* just stating the type invar, should work *)
+    assert {forall q : key . good_data q h.model h.data}; 
+
+    assert {forall q : key . (q <> k /\ Mem.mem q h.data[i]) -> bucket_hash q (length h.data) = i};
+
+    assert {forall q : key . (q <> k) -> (in_data q h.data -> Fset.mem q h.model)};
+
+        (* run good data on all keys q not equal to k *)
+    assert {forall q : key . (q <> k) -> (Fset.mem q h.model -> in_data q h.data)};
+
+    (* check good hash holds (type invar) *)
+    assert {forall j . 0 <= j < length h.data -> good_hash h.data j};
+    let l = h.data[i] in 
+    if (not list_find k l) then ()
+    else 
+    (
+        h.data[i] <- list_remove k l;
+        h.size <- h.size - 1;
+        ghost (h.model <- Fset.remove k h.model);
+    );
+
+    assert {forall q : key . (q <> k /\ Mem.mem q h.data[i]) -> bucket_hash q (length h.data) = i};
+
+    (* run good hash on k *)
+    assert {Mem.mem k h.data[i] -> bucket_hash k (length h.data) = i};
+
+    (* run good data on k*)
+    assert {good_data k h.model h.data};
+
+    (* run good data on all keys q not equal to k *)
+    assert {forall q : key . (q <> k) -> (Fset.mem q h.model -> in_data q h.data)};
+
+    (* can we prove good data for our specific bucket *)
+    assert {forall q : key . (Mem.mem q h.data[i]) -> (Fset.mem q h.model -> in_data q h.data)};
+
+    assert {forall q : key . (Mem.mem q h.data[i]) -> (in_data q h.data -> Fset.mem q h.model)};
+
+    (* run good data on all keys q not equal to k *)
+    assert {forall q : key . (q <> k) -> (in_data q h.data -> Fset.mem q h.model)};
+
+     (* check good hash holds for j not equal to  (type invar) *)
+    
+    assert { forall j. 0 <= j < length h.data /\ i <> j -> h.data[j] = (old h).data[j]  };
+    assert { forall j. 0 <= j < length h.data /\ i <> j -> good_hash (old h).data j  }; 
+    
+
+    assert {  length (old h).data = length h.data };
+    assert { forall j.  0 <= j < length h.data  ->
+    
+          (good_hash (old h).data j /\ (old h).data[j] = h.data[j]
+            -> good_hash h.data j
+          ) }; 
+
+    assert {forall j . 0 <= j < length h.data /\ (i <> j) -> good_hash h.data j};
+    assert {forall j . 0 <= j < length h.data /\ (i = j) -> good_hash h.data j};
+
+
+    assert {forall j . 0 <= j < length h.data -> good_hash h.data j};
+    assert {forall q : key . good_data k h.model h.data}
+ 
+
+(* create an empty hash set of size n *)
+let create (n : int) : hash_set = 
+    requires{n > 0}
+    ensures{result.data.length = n}
+    ensures{Fset.is_empty result.model}
+    {size = 0 ; data = Array.make n (Nil) ; model = Fset.empty}
+    
+
+(* add key k to our hash set *)
+(* modified from gallery implementation above *)
+(* ** removed redundant post-conditions *)
+let add (h : hash_set) (k : key) : unit = 
+    ensures {h.model = Fset.add k (old h.model)}
+    (* run good data on all keys q not equal to k *)
+    let i = bucket_hash k (length h.data) in 
+     assert {forall j . 0 <= j < length h.data -> good_hash h.data j};
+     assert {0 <= i < length h.data};
+     (* assert {((forall j . 0 <= j < length h.data -> good_hash h.data j) /\  
+            0 <= i < length h.data)
+        -> good_hash h.data i}; *)
+     assert {good_hash h.data i};
+     assert {forall q : key . (q <> k) -> good_data q h.model h.data};
+     assert {forall q : key . Mem.mem q h.data[i] -> bucket_hash q (length h.data) = i};
+
+     (* just stating the type invar, should work *)
+     assert {forall q : key . good_data q h.model h.data}; 
+
+     assert {forall q : key . (q <> k /\ Mem.mem q h.data[i]) -> bucket_hash q (length h.data) = i};
+
+     assert {forall q : key . (q <> k) -> (in_data q h.data -> Fset.mem q h.model)};
+
+         (* run good data on all keys q not equal to k *)
+    assert {forall q : key . (q <> k) -> (Fset.mem q h.model -> in_data q h.data)};
+
+    (* check good hash holds (type invar) *)
+    assert {forall j . 0 <= j < length h.data -> good_hash h.data j};
+
+    let new_bucket = Cons k h.data[i] in
+    assert{forall q : key . (Mem.mem q new_bucket) <-> (Mem.mem q h.data[i]) \/ (q = k)};
+    h.data[i] <- new_bucket;
+    (h.size <- h.size + 1);
+    ghost (h.model <- Fset.add k h.model);
+
+    (* assert{forall k' : key . (Fset.mem k' h.model /\ 
+    (bucket_hash k' (length h.data)) = (bucket_hash k (length h.data))) ->
+     (Mem.mem k' h.data[i])}; *)
+    
+    (* run good hash on all keys not equal to k *)
+    assert {forall q : key . (q <> k /\ Mem.mem q h.data[i]) -> bucket_hash q (length h.data) = i};
+
+    (* run good hash on k *)
+    assert {Mem.mem k h.data[i] -> bucket_hash k (length h.data) = i};
+
+    (* run good data on k*)
+    assert {good_data k h.model h.data};
+
+    (* run good data on all keys q not equal to k *)
+    assert {forall q : key . (q <> k) -> (Fset.mem q h.model -> in_data q h.data)};
+
+    (* can we prove good data for our specific bucket *)
+    assert {forall q : key . (Mem.mem q h.data[i]) -> (Fset.mem q h.model -> in_data q h.data)};
+
+    assert {forall q : key . (Mem.mem q h.data[i]) -> (in_data q h.data -> Fset.mem q h.model)};
+
+    (* run good data on all keys q not equal to k *)
+    assert {forall q : key . (q <> k) -> (in_data q h.data -> Fset.mem q h.model)};
+
+     (* check good hash holds for j not equal to  (type invar) *)
+    
+    assert { forall j. 0 <= j < length h.data /\ i <> j -> h.data[j] = (old h).data[j]  };
+    assert { forall j. 0 <= j < length h.data /\ i <> j -> good_hash (old h).data j  }; 
+    
+
+    assert {  length (old h).data = length h.data };
+    assert { forall j.  0 <= j < length h.data  ->
+    
+          (good_hash (old h).data j /\ (old h).data[j] = h.data[j]
+            -> good_hash h.data j
+          ) }; 
+
+    assert {forall j . 0 <= j < length h.data /\ (i <> j) -> good_hash h.data j};
+    assert {forall j . 0 <= j < length h.data /\ (i = j) -> good_hash h.data j};
+
+
+    assert {forall j . 0 <= j < length h.data -> good_hash h.data j}
+
+(* find key k in our hash set *)
+(* modified from gallery implementation above *)
+let find (h : hash_set) (k : key) : bool = 
+    ensures{h.model == old h.model} 
+    ensures{result <-> Fset.mem k h.model}
+    let i = bucket_hash k (length h.data) in 
+    list_find k h.data[i]
+
+(* wasn't able to get resize to verify, so created this function that 
+correctly resizes with add, but doesn't verify unfortunately *)
+let add_with_resize (h : hash_set) (k : key) : unit =
+    ensures {h.model = Fset.add k (old h.model)} 
+    if h.size = length h.data then resize h;
+    remove h k;
+    add h k
+    
+
+end
+module IntHashSet
+
+    use int.Int
+
+    let function my_hash x : int =  if x < 0 then -1 * x else x 
+
+    clone export HashSet with type key = int, val eq = Int.(=), val hash = my_hash, axiom .
+
+end
+
+(* assert {good_hash h.data i};
+    assert {forall j . 0 <= j < length h.data -> good_hash h.data j}; 
+    assert {forall k : key . good_data k h.model h.data}; *)
+
+   (* assert {good_hash h.data i};
+    assert {in_data k h.data}; (* why cannot it reason about the type invars *)
+    
+    assert {good_data k h.model h.data} *)
+
+(* MP1 FEEDBACK : 
+
+(* currently it can't prove my latter two type invariants, I'm at a loss for 
+why. I've tried to reason about it but i really don't know at this point *)
+
+Could not verify add. There is certainly other information you can 
+add with assertions. For example, what is true about the untouched
+buckets in old(h.data) and h.data? You could also add a helper function 
+for add_bucket, with the appropriate post conditions,
+and this may help the prover along.*)
+
+(*can't prove the invariants checking for good_hash and good_data
+2 possibilities -> (predicates are wrong, or add needs more info maybe?)
+
+it cannot prove either of our larger type invariants 
+
+could it be failing to prove because it isn't true?
+
+It is able to prove our type invariants beforehand. 
+
+So what changes.
+
+We add k to data[i] and k to our model
+
+
+
+-----------------------------------------
+
+contracts for haven't modified aspects
+split vc the implication 
+
+only remaining issue is showing that our result is the same as checking
+that our key is in our ghost set
+
+can we more simply relate our data to our model
+
+for each bucket, for every element in our bucket <-> Fset.mem element model 
+
+we basically want to show that if something is in our set, then it is in our data
+
+does the all_mem predicate solve this? 
+- we are able to prove find, but not find_bucket 
+	- what's wrong with find_bucket 
+		- problem: can't show that result -> in set in the case that we find
+
+we probably need another invariant that goes from our set to the data probably 
+
+added new invariant 
+
+everything seems to verify except find and find_bucket 
+
+find still cannot prove the length 0 case. It 
+
+how do we ensure that the key doesn't end up in any other key 
+
+
+(* need another invariant ensuring that everything in our structure is in our 
+ghost *)
+
+(* goal: invariant should basically take all the elements from all the lists in our 
+array, and check that the set from that is equal to our model  *)
+(* 
+
+
+(* let rec function combine (l : list (list key)) (acc : list key) = 
+    match l with 
+    | Nil -> acc
+    | Cons x r -> x ++ (combine r acc)
+    end
+
+predicate all_mem (data : array bucket) (model : Fset.fset key) = 
+    let data_list = ToList.to_list data 0 (length data) in 
+    let all_elems = combine data_list Nil in 
+    let elem_set = Elements.elements (all_elems) in
+    elem_set == model   *)
+
+(* we want why3 to know that given a key, the only bucket it can be in, is 
+the bucket of index mod_hash(k) *)
+ (* invariant {forall i . 0 <= i < data.length -> 
+            (forall j . 0 <= j < (Length.length (data[i])) -> 
+            (Fset.mem ()))} *)
+
+(* this is saying that everything in our data is in our model
+invariant {forall i . 0 <= i < data.length -> 
+            (forall j . 0 <= j < (Length.length (data[i])) -> 
+                (Fset.mem (NthNoOpt.nth j (data[i])) model))} *)
+(*  *)
+
+(* this makes find prove, but then create doesn't?
+invariant {data.length = 0 <-> Fset.is_empty model} *)
+(* invariant {forall k : key . (Fset.mem k model) -> ((Mem.mem k data[(mod_hash k data)]))}  *)
+
+(* will this help with the find case? *)
+
+* adds a bucket to our hash set
+let add_bucket (h : hash_set) (k : key) : unit = 
+    ensures{h.model == old h.model}
+     *)
+    
+(* create an empty bucket *)
+(* let create_bucket : bucket = Nil *)
+
+(* add the key to our bucket *)
+(* let add_bucket (b : bucket) (k : key) : unit = 
+    b <- Cons k b; *)
+(* used in our post-condition for find? similar to intset *)
+(* predicate mem (h : hash_set) (k : key) = 
+    exists i:int . 0 <= i < h.data.length /\ Mem.mem k (h.data[i])  *)
+
+(* used in our post-condition for find_bucket? *)
+(* predicate mem_bucket (b : bucket) (k : key) = 
+    exists i:int . 0 <= i < h.length /\ mem_bucket (h[i]) k *)
+
+(* predicate mem_bucket (b : bucket) (model : Fset.fset key) = 
+    forall i . 0 <= i <= (Length.length b) -> (Fset.mem (Nth.nth i b) model) *)
+
+
+(* verify that everything in our bucket is in our ghost model*)
+
+*)
