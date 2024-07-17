@@ -1,0 +1,207 @@
+module UnionFindBare
+
+use int.Int
+use array.Array
+use option.Option
+
+(* DO NOT CHANGE *)
+type elem = int
+
+type uf = { size : int ;
+            parent : array elem ;
+            rank : array int }
+invariant{size = parent.length = rank.length}
+invariant{forall i. 0 <= i < size -> 0 <= parent[i] < size}
+by {size = 0; parent = Array.make 0 0; rank = Array.make 0 0}
+
+
+(* if its parent is itself, then we have a root *)
+predicate is_root (uf : uf) (x : elem) = uf.parent[x] = x 
+
+(* helper to retrieve the size of the union find from cong bare module*)
+function uf_size (uf : uf) : int = uf.size
+
+function uf_parent (uf : uf) : array elem = uf.parent
+
+(* DO NOT CHANGE THE NAMES OR TYPES OF THESE FUNCTIONS *)
+let uf_new (n : int) : uf = 
+  requires{n >= 0}
+  ensures{result.size = n}
+  let parent = Array.make n 0 in 
+  let rank = Array.make n 0 in 
+  let size = n in 
+  for i = 0 to n - 1 do 
+    invariant{forall j. 0 <= j < i -> 0 <= parent[j] < n}
+    invariant{0 <= i <= n}
+    parent[i] <- i; 
+  done; 
+  {size = size; parent = parent; rank = rank}
+  
+(* recursive par x = x base case return -> par x != x find uf (par x)*)
+let rec find (uf : uf) (x : elem) : elem = 
+  diverges
+  requires{0 <= x < uf.size}
+  ensures{0 <= result < uf.size}
+  ensures{is_root uf result}
+  if uf.parent[x] = x then x 
+  else find uf (uf.parent[x]) 
+
+(* bigger one's rank will probably change *)
+(* let parent of smaller to bigger *)
+(* find bigger, smaller *)
+(* bigger(rank) = max(bigger(rank), smaller(rank) + 1)*)
+(* x = smaller, y = bigger*)
+
+let unionHelp (uf : uf) (xrep : elem) (yrep : elem) : unit =
+  requires{0 <= xrep < uf.size}
+  requires{0 <= yrep < uf.size}
+  requires{is_root uf xrep}
+  requires{is_root uf yrep}
+  requires{uf.rank[xrep] <= uf.rank[yrep]}
+  ensures{uf.parent[xrep] = yrep}
+  uf.parent[xrep] <- yrep;
+  uf.rank[yrep] <- (if (uf.rank[xrep] = uf.rank[yrep]) then (uf.rank[xrep] + 1) else uf.rank[yrep]);
+  ()
+
+let union (uf : uf) (x : elem) (y : elem) : unit =
+  diverges
+  requires{0 <= x < uf.size}
+  requires{0 <= y < uf.size}
+  let xrep = find uf x in 
+  let yrep = find uf y in 
+  if xrep = yrep then () else 
+  if uf.rank[xrep] > uf.rank[yrep] then unionHelp uf yrep xrep else unionHelp uf xrep yrep
+  
+end (* module UnionFindBare *)
+
+module CongBare
+
+  use int.Int
+  use list.List
+  use list.Nth
+  use list.Length
+  use list.Mem
+  use array.Array
+  use option.Option
+
+  (* DO NOT CHANGE *)
+  type const = int
+
+  (* DO NOT CHANGE *)
+  type eqn =
+  | Defn const const const  (* c = App a b *)
+  | Eqn const const         (* a = b *)
+
+  use UnionFindBare as U
+
+  predicate valid_eqn (size : int) (e : eqn) = 
+    (match e with 
+      | Defn a b c -> ((0 <= a < size) && (0 <= b < size) && (0 <= c < size))
+      | Eqn a b -> (0 <= a < size) && (0 <= b < size)
+      end)
+
+  type cc = { size : int ;
+              uf : U.uf ;
+              mutable eqns : list eqn }
+  invariant{size = U.uf_size uf}
+  invariant{forall e . mem e eqns -> valid_eqn size e}
+  invariant {forall j . match nth j eqns with
+                              | Some e -> valid_eqn size e
+                              | None -> true
+                              end}
+  by {size = 0; uf = U.uf_new 0; eqns = Nil}
+
+  (* DO NOT CHANGE THE NAMES OR TYPES OF THESE FUNCTIONS *)
+
+  (* creates a new cc of size n*)
+  let cc_new (n : int) : cc = 
+    requires{n >= 0}
+    ensures{result.size = n}
+    let size = n in
+    let uf = U.uf_new n in 
+    let eqns = Nil in 
+    assert{size = U.uf_size uf};
+    {size = size; uf = uf; eqns = eqns}
+
+  
+  (* consult our uf to see if a and b are in the same eq class*)
+  let check_eq (cc : cc) (a : const) (b : const) : bool = 
+    diverges
+    requires{0 <= a < cc.size}
+    requires{0 <= b < cc.size}
+    let arep = U.find cc.uf a in
+    let brep = U.find cc.uf b in
+    arep = brep
+
+  let rec mergeHelp (cc : cc) (x : const) (y : const) (z : const) (eqns : list eqn) (status : bool) : bool = 
+    diverges
+    requires{forall e . mem e eqns -> valid_eqn cc.size e}
+    requires{0 <= x < cc.size}
+    requires{0 <= y < cc.size}
+    requires{0 <= z < cc.size}
+    match eqns with 
+     | Nil -> status
+     | Cons (Eqn _ _) es -> mergeHelp cc x y z es status
+     | Cons (Defn a b c) es -> 
+        if ((check_eq cc b y) && (check_eq cc c z) && (not (check_eq cc a x))) then
+        (U.union (cc.uf) a x; mergeHelp cc x y z es true) 
+        else mergeHelp cc x y z es status
+    end 
+
+  let merge (cc : cc) (e : eqn) : unit = 
+    diverges
+    requires{valid_eqn cc.size e}
+    match e with 
+     | Eqn a b -> U.union cc.uf a b  
+     | Defn _ _ _ -> cc.eqns <- Cons e cc.eqns
+    end;
+    let ref looping = true in 
+    while looping do 
+      invariant{forall p . 0 <= p < cc.size -> 0 <= (U.uf_parent cc.uf)[p] < cc.size}
+      looping <- false; 
+      for i = 0 to (length cc.eqns) - 1 do
+        invariant{forall p . 0 <= p < cc.size -> 0 <= (U.uf_parent cc.uf)[p] < cc.size}
+        match nth i cc.eqns with 
+          | None -> ()
+          | Some (Eqn _ _) -> ()
+          | Some (Defn a b c) -> looping <- mergeHelp cc a b c cc.eqns false
+        end
+      done; 
+    done; 
+
+end  (* module CongBare *)
+
+(* optional module *)
+module Test
+
+  use CongBare as C
+
+  (* let test1 () = 
+    diverges
+    let cc = C.cc_new 10 in
+    let a = 0 in
+    let b = 1 in 
+    let c = 2 in 
+    let d = 3 in 
+    let e = 4 in 
+    let f = 5 in
+    C.merge cc (C.Defn b f a); (* b = f(a) *)
+    C.merge cc (C.Defn c f a); (* c = f(a) *)
+    C.merge cc (C.Defn e f d); (* e = f(d) *)
+    C.merge cc (C.Eqn d a); (* d = a *)
+    C.check_eq cc b c && C.check_eq cc b e && C.check_eq cc c e
+  
+  let test2 () =
+    diverges
+    let cc = C.cc_new 10 in
+    let a = 0 in
+    let b = 1 in 
+    let c = 2 in 
+    let d = 3 in 
+    let e = 4 in 
+    let f = 5 in
+    C.merge cc (C.Defn b f a); (* b = f(a) *)
+    C.merge cc (C.Defn c f b); (* c = f(b) = f(f(a))*)
+    C.check_eq cc b c *)
+
+end

@@ -1,0 +1,243 @@
+module UnionFindPath
+
+use int.Int
+use array.Array
+use option.Option
+
+(* BEGIN DO NOT CHANGE *)
+type elem = int
+
+type path  (* abstract *)
+function refl (x : elem) : path
+function sym (p : path) : path
+function trans (p1 : path) (x : elem) (p2 : path) : path
+
+predicate connects (p : path) (x : elem) (y : elem)
+axiom c_refl : forall x. connects (refl x) x x
+axiom c_sym : forall p x y. connects p x y -> connects (sym p) y x
+axiom c_trans : forall x y z p q.
+  connects p x y -> connects q y z -> connects (trans p y q) x z
+(* END DO NOT CHANGE *)
+
+(* TODO: add data structure invariant that guarantees forall x . path[x] connects x to parent[x] *)
+type uf = { size : int ;
+            parent : array elem ;
+            rank : array int ;
+            ghost path : array path }
+invariant{size = parent.length = rank.length = path.length}
+invariant{forall i. 0 <= i < parent.length -> 0 <= parent[i] < parent.length}
+invariant{forall i. 0 <= i < path.length -> (connects path[i] i parent[i])}
+by {size = 0; parent = Array.make 0 0; rank = Array.make 0 0; path = Array.make 0 (ghost (refl 0))}
+
+
+predicate is_root (uf : uf) (x : elem) 
+
+function uf_size (uf : uf) : int = uf.size
+
+function uf_parent (uf : uf) : array elem = uf.parent
+
+(* DO NOT CHANGE THE NAMES OR TYPES OF THESE FUNCTIONS *)
+let uf_new (n : int) : uf = 
+requires{n >= 0}
+ensures{result.size = n}
+  let parent = Array.make n 0 in 
+  let rank = Array.make n 0 in 
+  let path = Array.make n (ghost (refl 0)) in 
+  let size = n in 
+  for i = 0 to n - 1 do 
+    invariant{forall j. 0 <= j < i -> 0 <= parent[j] < n}
+    invariant{0 <= i <= n}
+    invariant{forall j. 0 <= j < i -> connects path[j] j parent[j]}
+    parent[i] <- i; 
+    ghost(path[i] <- refl parent[i]);
+  done; 
+  {size = size; parent = parent; rank = rank; path = path}
+
+(* ensure that p is a path from x to y*)
+let rec find (uf : uf) (x : elem) : (elem, ghost path) =
+diverges
+requires{0 <= x < uf.size}
+ensures{let (el, _) = result in 0 <= el < uf.size}
+ensures{let (rep, p) = result in connects p x rep}
+if uf.parent[x] = x then (x, ghost(refl x))
+else (
+  let (rep, q) = find uf (uf.parent[x]) in 
+  (rep, ghost (trans uf.path[x] uf.parent[x] q))
+)
+(* assume rank(x) <= rank(y) 
+   find uf x -> path(x -> x_rep) 
+   find uf y -> path(y -> y_rep)
+   expected path should be path(x -> x_rep) x_rep -> y_rep -> sym of path(y -> y_rep) *)
+(* x, y, pxy = trans (refl x x refl y) *)
+
+(* pxy -> p x_rep to y_rep *)
+
+(* pxy = trans (p x x_rep) x_rep  *)
+
+(* how do we write xrep to yrep , path[xrep] <- 
+*)
+
+(* no shared nbor here, path x to x, x, path y to y - trans uf.path[xrep] xrep uf.path[yrep] *)
+
+(* rank of xrep <= yrep *)
+let unionHelp (uf : uf) (x : elem) (y : elem) (xrep : elem) (yrep : elem)
+ (ghost xpath : path) (ghost ypath : path) (ghost pxy : path) : unit =
+  requires{0 <= xrep < uf.size}
+  requires{0 <= yrep < uf.size}
+  (* requires{is_root uf xrep} *)
+  (* requires{is_root uf yrep} *)
+  requires{uf.rank[xrep] <= uf.rank[yrep]}
+  requires{connects pxy x y}
+  requires{connects xpath x xrep}
+  requires{connects ypath y yrep}
+  uf.parent[xrep] <- yrep;
+  ghost(
+    let flip = sym xpath in 
+    assert{connects flip xrep x}; 
+    let p1 = trans (sym (xpath)) x pxy in 
+    assert{connects p1 xrep y};
+    uf.path[xrep] <- trans p1 y ypath;
+    assert{connects uf.path[xrep] xrep uf.parent[xrep]};
+  ); (* path from xrep -> yrep *)
+  uf.rank[yrep] <- (if (uf.rank[xrep] = uf.rank[yrep]) then (uf.rank[xrep] + 1) else uf.rank[yrep]);
+  ()
+
+let union (uf : uf) (x : elem) (y : elem) (ghost pxy : path) : unit =
+  diverges
+  requires{connects pxy x y}
+  requires{0 <= x < uf.size}
+  requires{0 <= y < uf.size}
+  let (xrep, xpath) = find uf x in 
+  let (yrep, ypath) = find uf y in 
+  if xrep = yrep then () else 
+  let flip = ghost(sym pxy) in 
+  if uf.rank[xrep] > uf.rank[yrep] then unionHelp uf y x yrep xrep ypath xpath flip
+  else unionHelp uf x y xrep yrep xpath ypath pxy
+
+end
+
+module CongPath
+
+  use int.Int
+  use list.List
+  use list.Length
+  use list.Nth
+  use list.Mem
+  use array.Array
+  use option.Option
+
+  (* BEGIN DO NOT CHANGE *)
+  type const = int
+
+  type eqn =
+  | Defn const const const  (* c = App a b *)
+  | Eqn const const         (* a = b *)
+
+  use UnionFindPath as U
+
+  predicate valid_eqn (size : int) (e : eqn) = 
+    (match e with 
+      | Defn a b c -> ((0 <= a < size) && (0 <= b < size) && (0 <= c < size))
+      | Eqn a b -> (0 <= a < size) && (0 <= b < size)
+      end)
+
+  function hyp (e : eqn) : U.path
+  axiom c_hyp : forall a b.
+    U.connects (hyp (Eqn a b)) a b
+
+  function mono (p : U.path) (q : U.path) (e : eqn) (e' : eqn) : U.path
+  axiom c_mono : forall p q a a' b b' c c'.
+    U.connects p a a' -> U.connects q b b' -> U.connects (mono p q (Defn c a b) (Defn c' a' b')) c c'
+  (* END DO NOT CHANGE *)
+
+  type cc = { size : int ;
+              uf : U.uf ;
+              mutable eqns : list eqn }
+  invariant{size = U.uf_size uf}
+  invariant{forall e . mem e eqns -> valid_eqn size e}
+  invariant {forall j . match nth j eqns with
+                              | Some e -> valid_eqn size e
+                              | None -> true
+                              end}
+  by {size = 0; uf = U.uf_new 0; eqns = Nil}
+
+  (* DO NOT CHANGE THE NAMES OR TYPES OF THESE FUNCTIONS *)
+  let cc_new (n : int) : cc = 
+    requires{n >= 0}
+    ensures{result.size = n}
+    let size = n in
+    let uf = U.uf_new n in 
+    let eqns = Nil in 
+    assert{size = U.uf_size uf};
+    {size = size; uf = uf; eqns = eqns}
+
+  (* when a and b are not equal, return false, None
+     when a and b are equal ,return false, Some path *)
+  let check_eq (cc : cc) (a : const) (b : const) : (bool, ghost (option U.path)) = 
+    diverges
+    requires{0 <= a < cc.size}
+    requires{0 <= b < cc.size}
+    ensures{match result with 
+            | (x, None) -> not x
+            | (x, Some p) -> x && (U.connects p a b) 
+            end}
+    let (arep, apath) = U.find cc.uf a in
+    let (brep, bpath) = U.find cc.uf b in
+    if arep = brep then (true, ghost(Some (U.trans apath arep (U.sym bpath))))
+    else (false, ghost(None))
+
+  let rec mergeHelp (cc : cc) (x : const) (y : const) (z : const) (eqns : list eqn) (status : bool) : bool = 
+    diverges
+    requires{forall e . mem e eqns -> valid_eqn cc.size e}
+    requires{0 <= x < cc.size}
+    requires{0 <= y < cc.size}
+    requires{0 <= z < cc.size}
+    match eqns with 
+     | Nil -> status
+     | Cons (Eqn _ _) es -> mergeHelp cc x y z es status
+     (* path from y to b , path from z to c, *)
+     | Cons (Defn a b c) es -> 
+        let (con1, p) = check_eq cc y b in 
+        let (con2, q) = check_eq cc z c in
+        let (con3, _) = check_eq cc x a in
+        if (con1 && con2 && (not con3)) then 
+        (let Some (p') = p in 
+        let Some (q') = q in
+        assert{U.connects p' y b};
+        assert{U.connects q' z c}; 
+        let final_path = ghost(mono p' q' (Defn x y z) (Defn a b c)) in 
+        assert{U.connects final_path x a}; 
+        (U.union (cc.uf) x a (ghost final_path); mergeHelp cc x y z es true))
+        else mergeHelp cc x y z es status
+    end 
+
+  let merge (cc : cc) (e : eqn) : unit = 
+    diverges
+    requires{valid_eqn cc.size e}
+    match e with 
+     | Eqn a b -> U.union cc.uf a b (ghost (hyp e))
+     | Defn _ _ _ -> cc.eqns <- Cons e cc.eqns
+    end;
+    let ref looping = true in 
+    while looping do 
+      invariant{forall p . 0 <= p < cc.size -> 0 <= (U.uf_parent cc.uf)[p] < cc.size}
+      looping <- false; 
+      for i = 0 to (length cc.eqns) - 1 do
+        invariant{forall p . 0 <= p < cc.size -> 0 <= (U.uf_parent cc.uf)[p] < cc.size}
+        match nth i cc.eqns with 
+          | None -> ()
+          | Some (Eqn _ _) -> ()
+          | Some (Defn a b c) -> looping <- mergeHelp cc a b c cc.eqns false
+        end
+      done; 
+    done;
+  
+
+end
+
+(* optional module *)
+(* module Test
+
+  use Cong as C
+
+end *)
